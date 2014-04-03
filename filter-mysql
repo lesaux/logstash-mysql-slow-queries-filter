@@ -1,0 +1,73 @@
+filter {
+
+
+if [type] == "mysql-slow" {
+
+grep {
+    # ignore '# Time:' as we use the SET timestamp to get the time. grep is actually
+    # on the deprecation cycle so need to figure out an alternative to this
+    match => {
+        message => [
+            "# Time: "
+        ]
+    }
+    negate => true
+}
+
+multiline {
+    # anything not starting with # or SET is the actual query being run so roll it up with
+    # the previous entries
+    pattern => "^#|^SET"
+    negate => true
+    what => "previous"
+}
+
+
+grok {
+    match => {
+        message => [
+            "# User@Host: %{WORD:user}\[%{WORD}\] @ (%{HOST:client_hostname}|) \[(%{IP:client_ip}|)\]",
+	    "# Thread_id: %{NUMBER:thread_id:int} \s*Schema: (%{WORD:schema}| ) \s*Last_errno: %{NUMBER:last_errno:int} \s*Killed: %{NUMBER:killed:int}",
+            "# Query_time: %{NUMBER:query_time:float} \s*Lock_time: %{NUMBER:lock_time:float} \s*Rows_sent: %{NUMBER:rows_sent:int} \s*Rows_examined: %{NUMBER:rows_examined:int} \s*Rows_affected: %{NUMBER:rows_affected:int} \s*Rows_read: %{NUMBER:rows_read:int}",
+            "# Bytes_sent: %{NUMBER:bytes_sent:int}",
+            "(?m)SET timestamp=%{NUMBER:timestamp};%{GREEDYDATA:mysql_query}"
+        ]
+    }
+}
+
+
+
+mutate {
+	gsub => [ "mysql_query", "\n", " " ]
+	gsub => [ "mysql_query", "  ", " " ]
+	add_tag => "mutated_mysql_query"
+}
+
+
+multiline {
+    # you would think if we set the pattern to "# Time" with that as a pattern in
+    # grok rather than skipping in the (deprecated) grep we would solve the problem
+    # of not capturing fields on the User@Host line but unfortunately that doesn't
+    # work because the Time line is not always present. so we have to hook onto
+    # the User@Host line, the consequence of which is its fields not being captured
+    pattern => "(# User|# Thread|# Query|# Time|# Bytes)"
+    negate => false
+    what => "next"
+}
+
+
+
+
+date {
+    # use the value from SET timestamp as the timestamp of the event
+    match => [ "timestamp","UNIX" ]
+}
+
+mutate {
+    # and then remove the timestamp field as it becomes redundant
+    remove_field => [ "timestamp" ]
+}
+
+}
+
+}
